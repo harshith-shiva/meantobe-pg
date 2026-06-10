@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import React,{ useState } from 'react'
+import {useMemo} from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Pencil, Building2, MapPin, Phone, Mail, BedDouble, IndianRupee, SquareArrowUpRight, Plus, Trash2 } from 'lucide-react'
-import { usePG, useRooms, useNotes, useLeads, useBookings, useReminders, useCreateNote, useDeleteNote, useCreateRoom, useDeleteRoom, useUpdateRoom, useDeletePG } from '../../hooks'
+import { ArrowLeft, Pencil, Building2, MapPin, Phone, Mail, BedDouble, IndianRupee, SquareArrowUpRight, Plus, Trash2,LogOut } from 'lucide-react'
+import { usePG, useRooms, useNotes, useLeads, useBookings, useReminders, useCreateNote, useDeleteNote, useCreateRoom, useDeleteRoom, useUpdateRoom, useDeletePG,useUpdateBooking } from '../../hooks'
 import { Button, Badge, Tabs, Skeleton, EmptyState, ConfirmDialog, Spinner, Modal } from '../../components/ui'
 import { formatCurrency, formatDate, getLeadStatusBadge, getBookingStatusBadge, isOverdue } from '../../lib/utils'
 import { toast } from 'sonner'
@@ -9,7 +10,7 @@ import { useAuth } from '../../context/AuthContext'
 import ReminderForm from '../../components/reminders/ReminderForm'
 import BookingForm from '../../components/bookings/BookingForm'
 import BulkRoomAddModal from '../../components/rooms/BulkRoomAddModal'
-
+import { useTenants, useCreateTenant, useUpdateTenant, useDeleteTenant } from '../../hooks'
 // ─── Notes Panel ──────────────────────────────────────────────────────────────
 function NotesPanel({ pgId }) {
   const { user } = useAuth()
@@ -80,33 +81,373 @@ function NotesPanel({ pgId }) {
   )
 }
 
+function TenantExpandPanel({ roomId, pgId, totalBeds }) {
+  const { data: tenants = [], isLoading: tenantsLoading } = useTenants(roomId)
+  const { data: bookings = [], isLoading: bookingsLoading } = useBookings({
+    room_id: roomId,
+    status: 'booked',
+  })
+
+  const createTenant  = useCreateTenant()
+  const updateTenant  = useUpdateTenant()
+  const deleteTenant  = useDeleteTenant()
+  const updateBooking = useUpdateBooking()
+
+  const isLoading = tenantsLoading || bookingsLoading
+
+  // ── Merge both sources into a unified list ──────────────────────────────────
+  // Each item carries _source so we know which mutation to use when saving/removing.
+  const mergedRows = useMemo(() => {
+    const tenantRows = tenants.map(t => ({
+      ...t,
+      // canonical display fields
+      name:              t.name,
+      phone:             t.phone,
+      email:             t.email,
+      rent_payable_date: t.rent_payable_date,
+      rent_paid:         t.rent_paid,
+      _source:           'tenant',
+    }))
+
+    const bookingRows = bookings.map(b => ({
+      id:                b.id,
+      name:              b.student_name,
+      phone:             b.student_phone,
+      email:             b.student_email,
+      rent_payable_date: b.rent_payable_date,
+      rent_paid:         b.rent_paid ?? false,
+      _source:           'booking',
+    }))
+
+    return [...tenantRows, ...bookingRows]
+  }, [tenants, bookings])
+
+  // ── Inline edit state: { [id]: { field: value } } ──────────────────────────
+  const [edits, setEdits] = useState({})
+  const [adding, setAdding] = useState(false)
+  const [newTenant, setNewTenant] = useState({
+    name: '', phone: '', email: '', rent_payable_date: '', rent_paid: false,
+  })
+
+  function setEdit(id, field, value) {
+    setEdits(e => ({ ...e, [id]: { ...e[id], [field]: value } }))
+  }
+
+  async function saveEdit(row) {
+    const changes = edits[row.id]
+    if (!changes) return
+
+    try {
+      if (row._source === 'booking') {
+        // Map display fields back to bookings column names
+        const bookingChanges = {}
+        if ('name'              in changes) bookingChanges.student_name    = changes.name
+        if ('phone'             in changes) bookingChanges.student_phone   = changes.phone
+        if ('email'             in changes) bookingChanges.student_email   = changes.email
+        if ('rent_payable_date' in changes) bookingChanges.rent_payable_date = changes.rent_payable_date
+        if ('rent_paid'         in changes) bookingChanges.rent_paid       = changes.rent_paid
+
+        await updateBooking.mutateAsync({ id: row.id, ...bookingChanges })
+      } else {
+        await updateTenant.mutateAsync({ id: row.id, room_id: roomId, ...changes })
+      }
+
+      setEdits(e => { const n = { ...e }; delete n[row.id]; return n })
+      toast.success('Saved')
+    } catch {
+      toast.error('Failed to save')
+    }
+  }
+
+  // Vacate a booking-sourced row (no hard delete — tell user to use bookings page)
+  async function handleVacate(row) {
+    try {
+      await updateBooking.mutateAsync({ id: row.id, status: 'vacated' })
+      toast.success('Booking marked as vacated')
+    } catch {
+      toast.error('Failed to vacate')
+    }
+  }
+
+  async function handleDeleteTenant(tenant) {
+    try {
+      await deleteTenant.mutateAsync({ id: tenant.id, room_id: roomId })
+      toast.success('Tenant removed')
+    } catch {
+      toast.error('Failed to remove tenant')
+    }
+  }
+
+  async function handleAdd(e) {
+    e.preventDefault()
+    try {
+      await createTenant.mutateAsync({ ...newTenant, room_id: roomId, pg_id: pgId })
+      setNewTenant({ name: '', phone: '', email: '', rent_payable_date: '', rent_paid: false })
+      setAdding(false)
+      toast.success('Tenant added')
+    } catch {
+      toast.error('Failed to add tenant')
+    }
+  }
+
+  return (
+    <div className="p-4 space-y-3 border-t border-[var(--border)]">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wide">
+          Tenants ({mergedRows.length}/{totalBeds} beds)
+        </span>
+        {mergedRows.length < totalBeds && (
+          <Button size="sm" variant="secondary" onClick={() => setAdding(a => !a)}>
+            <Plus size={11} />Add Tenant
+          </Button>
+        )}
+      </div>
+
+      {isLoading ? (
+        <Skeleton className="h-16" />
+      ) : mergedRows.length === 0 && !adding ? (
+        <p className="text-xs text-[var(--text-muted)] py-2">
+          No tenants recorded. Click "Add Tenant" to add one.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {mergedRows.map(row => {
+            const e    = edits[row.id] || {}
+            const val  = (field) => e[field] !== undefined ? e[field] : row[field]
+            const dirty = !!edits[row.id]
+            const isBooking = row._source === 'booking'
+
+            return (
+              <div
+                key={`${row._source}-${row.id}`}
+                className="surface p-3 space-y-2"
+              >
+                {/* ── Row header: badge for booking-sourced rows ── */}
+                {isBooking && (
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide
+                      bg-blue-50 text-blue-600 border border-blue-200 rounded px-1.5 py-0.5
+                      dark:bg-blue-900/20 dark:text-blue-400 dark:border-blue-800">
+                      From Booking
+                    </span>
+                    <span className="text-[10px] text-[var(--text-muted)]">
+                      To fully remove, delete from the Bookings page
+                    </span>
+                  </div>
+                )}
+
+                {/* ── Editable fields ── */}
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 items-center text-xs">
+                  <input
+                    className="input h-7 text-xs"
+                    value={val('name') || ''}
+                    placeholder="Name"
+                    onChange={ev => setEdit(row.id, 'name', ev.target.value)}
+                  />
+                  <input
+                    className="input h-7 text-xs"
+                    value={val('phone') || ''}
+                    placeholder="Phone"
+                    onChange={ev => setEdit(row.id, 'phone', ev.target.value)}
+                  />
+                  <input
+                    className="input h-7 text-xs"
+                    value={val('email') || ''}
+                    placeholder="Email"
+                    onChange={ev => setEdit(row.id, 'email', ev.target.value)}
+                  />
+                  <input
+                    className="input h-7 text-xs"
+                    type="date"
+                    value={val('rent_payable_date') || ''}
+                    onChange={ev => setEdit(row.id, 'rent_payable_date', ev.target.value)}
+                  />
+
+                  {/* ── Actions ── */}
+                  <div className="flex items-center gap-2">
+                    {/* Rent paid toggle */}
+                    <button
+                      className={`h-7 px-2 rounded text-xs font-medium border transition-colors ${
+                        val('rent_paid')
+                          ? 'bg-green-50 text-green-700 border-green-200 dark:bg-green-900/20 dark:text-green-400'
+                          : 'bg-red-50 text-red-600 border-red-200 dark:bg-red-900/20 dark:text-red-400'
+                      }`}
+                      onClick={() => setEdit(row.id, 'rent_paid', !val('rent_paid'))}
+                    >
+                      {val('rent_paid') ? 'Paid' : 'Unpaid'}
+                    </button>
+
+                    {dirty && (
+                      <button
+                        className="btn-primary h-7 px-2 text-xs"
+                        onClick={() => saveEdit(row)}
+                      >
+                        Save
+                      </button>
+                    )}
+
+                    {/* Vacate (booking rows) or Delete (tenant rows) */}
+                    {isBooking ? (
+                      <button
+                        className="btn-ghost h-7 w-7 p-0 text-orange-500 dark:text-orange-400"
+                        title="Mark as vacated (to fully delete, use the Bookings page)"
+                        onClick={() => handleVacate(row)}
+                      >
+                        <LogOut size={11} />
+                      </button>
+                    ) : (
+                      <button
+                        className="btn-ghost h-7 w-7 p-0 text-[var(--destructive)]"
+                        title="Remove tenant"
+                        onClick={() => handleDeleteTenant(row)}
+                      >
+                        <Trash2 size={11} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* ── Add tenant inline form (manual tenants only) ── */}
+      {adding && (
+        <form
+          onSubmit={handleAdd}
+          className="surface p-3 grid grid-cols-2 sm:grid-cols-5 gap-2 items-center border-dashed"
+        >
+          <input
+            className="input h-7 text-xs" placeholder="Name *" required
+            value={newTenant.name}
+            onChange={e => setNewTenant(n => ({ ...n, name: e.target.value }))}
+          />
+          <input
+            className="input h-7 text-xs" placeholder="Phone"
+            value={newTenant.phone}
+            onChange={e => setNewTenant(n => ({ ...n, phone: e.target.value }))}
+          />
+          <input
+            className="input h-7 text-xs" placeholder="Email" type="email"
+            value={newTenant.email}
+            onChange={e => setNewTenant(n => ({ ...n, email: e.target.value }))}
+          />
+          <input
+            className="input h-7 text-xs" type="date"
+            value={newTenant.rent_payable_date}
+            onChange={e => setNewTenant(n => ({ ...n, rent_payable_date: e.target.value }))}
+          />
+          <div className="flex gap-1">
+            <button type="submit" className="btn-primary h-7 px-2 text-xs flex-1">Add</button>
+            <button
+              type="button" className="btn-secondary h-7 px-2 text-xs"
+              onClick={() => setAdding(false)}
+            >✕</button>
+          </div>
+        </form>
+      )}
+    </div>
+  )
+}
+
 function RoomsPanel({ pgId }) {
   const { data: rooms = [], isLoading } = useRooms(pgId)
   const createRoom = useCreateRoom()
   const deleteRoom = useDeleteRoom()
   const updateRoom = useUpdateRoom()
+  const createTenant = useCreateTenant()
+
+  // Fetch booked bookings for this PG to derive roommates_accepted overrides
+  const { data: bookings = [] } = useBookings({ pg_id: pgId, status: 'booked' })
+
+  // Set of room IDs where at least one booking has roommates_accepted = false
+  // For those rooms, vacant count is displayed as 0 (don't touch DB)
+  const roomsWithRoommatesNotAccepted = useMemo(() => {
+    const s = new Set()
+    bookings.forEach(b => {
+      if (b.roommates_accepted === false && b.room_id) s.add(b.room_id)
+    })
+    return s
+  }, [bookings])
+
   const [bulkOpen, setBulkOpen] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
   const [editRoom, setEditRoom] = useState(null)
-  const [form, setForm] = useState({ room_number: '', bhk_type: '', total_beds: '', occupied_beds: '', floor: '' })
+  const [expandedRoom, setExpandedRoom] = useState(null)
 
-  const totalBeds = rooms.reduce((s, r) => s + (r.total_beds || 0), 0)
-  const occupiedBeds = rooms.reduce((s, r) => s + (r.occupied_beds || 0), 0)
+  // Single-room add form
+  const [form, setForm] = useState({
+    room_number: '', bhk_type: '', total_beds: '', occupied_beds: '', floor: ''
+  })
+
+  // Tenant rows pre-filled when occupied_beds > 0 in the add modal
+  // Array of { name, phone, email, rent_payable_date }
+  const [tenantForms, setTenantForms] = useState([])
+
+  // Keep tenantForms in sync whenever occupied_beds changes in the add modal
+  function handleOccupiedBedsChange(value) {
+    setForm(f => ({ ...f, occupied_beds: value }))
+    const count = Math.max(0, Math.min(parseInt(value) || 0, parseInt(form.total_beds) || 999))
+    setTenantForms(prev => {
+      const blank = { name: '', phone: '', email: '', rent_payable_date: '' }
+      if (count > prev.length) {
+        return [...prev, ...Array.from({ length: count - prev.length }, () => ({ ...blank }))]
+      }
+      return prev.slice(0, count)
+    })
+  }
+
+  // Also clamp tenantForms if total_beds shrinks below occupied
+  function handleTotalBedsChange(value) {
+    setForm(f => ({ ...f, total_beds: value }))
+    const total = parseInt(value) || 0
+    const occupied = parseInt(form.occupied_beds) || 0
+    if (occupied > total) {
+      setForm(f => ({ ...f, total_beds: value, occupied_beds: String(total) }))
+      setTenantForms(prev => prev.slice(0, total))
+    }
+  }
+
+  function setTenantField(index, field, value) {
+    setTenantForms(prev => prev.map((t, i) => i === index ? { ...t, [field]: value } : t))
+  }
 
   async function handleAdd(e) {
     e.preventDefault()
     try {
-      await createRoom.mutateAsync({
+      const room = await createRoom.mutateAsync({
         ...form,
         pg_id: pgId,
         total_beds: +form.total_beds,
         occupied_beds: +form.occupied_beds || 0,
         floor: +form.floor || 0,
       })
+
+      // Save tenant rows if any
+      if (tenantForms.length > 0 && room?.id) {
+        await Promise.all(
+          tenantForms
+            .filter(t => t.name.trim()) // skip blanks
+            .map(t => createTenant.mutateAsync({
+              ...t,
+              room_id: room.id,
+              pg_id: pgId,
+            }))
+        )
+      }
+
       toast.success('Room added')
       setAddOpen(false)
       setForm({ room_number: '', bhk_type: '', total_beds: '', occupied_beds: '', floor: '' })
+      setTenantForms([])
     } catch { toast.error('Failed to add room') }
+  }
+
+  function handleAddModalClose() {
+    setAddOpen(false)
+    setForm({ room_number: '', bhk_type: '', total_beds: '', occupied_beds: '', floor: '' })
+    setTenantForms([])
   }
 
   async function handleOccupiedChange(room, value) {
@@ -117,6 +458,16 @@ function RoomsPanel({ pgId }) {
     } catch { toast.error('Failed to update') }
     setEditRoom(null)
   }
+
+  // Summary: for roommates_accepted=false rooms, treat vacant as 0
+  const totalBeds = rooms.reduce((s, r) => s + (r.total_beds || 0), 0)
+  const occupiedBeds = rooms.reduce((s, r) => {
+    if (roomsWithRoommatesNotAccepted.has(r.id)) return s + (r.total_beds || 0)
+    return s + (r.occupied_beds || 0)
+  }, 0)
+
+  const occupiedBedsCount = +form.occupied_beds || 0
+  const showTenantSection = occupiedBedsCount > 0
 
   return (
     <div>
@@ -187,101 +538,225 @@ function RoomsPanel({ pgId }) {
               </thead>
               <tbody>
                 {rooms.map(room => {
-                  const vacant = room.total_beds - room.occupied_beds
+                  // If any booking for this room has roommates_accepted=false,
+                  // show vacant as 0 (display only — DB is untouched)
+                  const displayVacant = roomsWithRoommatesNotAccepted.has(room.id)
+                    ? 0
+                    : room.total_beds - room.occupied_beds
+
                   return (
-                    <tr key={room.id}>
-                      <td className="font-medium">{room.room_number}</td>
-                      <td className="text-[var(--text-muted)]">{room.floor ?? '—'}</td>
-                      <td>{room.bhk_type || '—'}</td>
-                      <td>{room.total_beds}</td>
-                      <td>
-                        {editRoom === room.id ? (
-                          <input
-                            className="input h-7 w-16 text-xs px-2"
-                            type="number"
-                            min="0"
-                            max={room.total_beds}
-                            defaultValue={room.occupied_beds}
-                            autoFocus
-                            onBlur={e => handleOccupiedChange(room, e.target.value)}
-                            onKeyDown={e => {
-                              if (e.key === 'Enter') handleOccupiedChange(room, e.target.value)
-                              if (e.key === 'Escape') setEditRoom(null)
-                            }}
-                          />
-                        ) : (
+                     <React.Fragment key={room.id}>
+                      <tr
+                        key={room.id}
+                        className="cursor-pointer"
+                        onClick={() => setExpandedRoom(expandedRoom === room.id ? null : room.id)}
+                      >
+                        <td className="font-medium">{room.room_number}</td>
+                        <td className="text-[var(--text-muted)]">{room.floor ?? '—'}</td>
+                        <td>{room.bhk_type || '—'}</td>
+                        <td>{room.total_beds}</td>
+                        <td onClick={e => e.stopPropagation()}>
+                          {editRoom === room.id ? (
+                            <input
+                              className="input h-7 w-16 text-xs px-2"
+                              type="number"
+                              min="0"
+                              max={room.total_beds}
+                              defaultValue={room.occupied_beds}
+                              autoFocus
+                              onBlur={e => handleOccupiedChange(room, e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') handleOccupiedChange(room, e.target.value)
+                                if (e.key === 'Escape') setEditRoom(null)
+                              }}
+                            />
+                          ) : (
+                            <button
+                              className={`text-sm px-1.5 py-0.5 rounded hover:bg-[var(--bg-hover)] transition-colors ${room.occupied_beds > 0 ? 'text-orange-600 dark:text-orange-400 font-medium' : 'text-[var(--text-muted)]'}`}
+                              onClick={() => setEditRoom(room.id)}
+                              title="Click to edit"
+                            >
+                              {room.occupied_beds}
+                            </button>
+                          )}
+                        </td>
+                        <td>
+                          <span className={`font-medium ${displayVacant > 0 ? 'text-green-600 dark:text-green-400' : 'text-[var(--text-muted)]'}`}>
+                            {displayVacant}
+                          </span>
+                        </td>
+                        <td onClick={e => e.stopPropagation()}>
                           <button
-                            className={`text-sm px-1.5 py-0.5 rounded hover:bg-[var(--bg-hover)] transition-colors ${room.occupied_beds > 0 ? 'text-orange-600 dark:text-orange-400 font-medium' : 'text-[var(--text-muted)]'}`}
-                            onClick={() => setEditRoom(room.id)}
-                            title="Click to edit"
+                            className="btn-ghost h-6 w-13 p-0 flex items-center justify-center text-[var(--destructive)]"
+                            onClick={() => deleteRoom.mutateAsync({ id: room.id, pg_id: pgId }).then(() => toast.success('Room deleted'))}
                           >
-                            {room.occupied_beds}
+                            <Trash2 size={12} />
                           </button>
-                        )}
-                      </td>
-                      <td>
-                        <span className={`font-medium ${vacant > 0 ? 'text-green-600 dark:text-green-400' : 'text-[var(--text-muted)]'}`}>
-                          {vacant}
-                        </span>
-                      </td>
-                      <td>
-                        <button
-                          className="btn-ghost h-6 w-13 p-0 flex items-center justify-center text-[var(--destructive)]"
-                          onClick={() => deleteRoom.mutateAsync({ id: room.id, pg_id: pgId }).then(() => toast.success('Room deleted'))}
-                        >
-                          <Trash2 size={12} />
-                        </button>
-                      </td>
-                    </tr>
+                        </td>
+                      </tr>
+
+                      {expandedRoom === room.id && (
+                        <tr key={`${room.id}-expand`}>
+                          <td colSpan={7} className="bg-[var(--bg-hover)] p-0">
+                            <TenantExpandPanel
+                              roomId={room.id}
+                              pgId={pgId}
+                              totalBeds={room.total_beds}
+                            />
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   )
                 })}
               </tbody>
             </table>
           </div>
           <div className="px-4 py-2 border-t border-[var(--border)] text-xs text-[var(--text-muted)]">
-            Tip: click any occupied count to edit it inline
+            Tip: click a row to view tenants · click any occupied count to edit it inline
           </div>
         </div>
       )}
 
-      {/* Single Room Modal */}
-      <Modal open={addOpen} onClose={() => setAddOpen(false)} title="Add Room">
+      {/* ── Single Room Modal ───────────────────────────────────────────── */}
+      <Modal open={addOpen} onClose={handleAddModalClose} title="Add Room">
         <form onSubmit={handleAdd} className="p-5 space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="label">Room Number *</label>
-              <input className="input" placeholder="e.g. 101" value={form.room_number} onChange={e => setForm(f => ({ ...f, room_number: e.target.value }))} required />
+              <input
+                className="input"
+                placeholder="e.g. 101"
+                value={form.room_number}
+                onChange={e => setForm(f => ({ ...f, room_number: e.target.value }))}
+                required
+              />
             </div>
             <div>
               <label className="label">Type</label>
-              <select className="select" value={form.bhk_type} onChange={e => setForm(f => ({ ...f, bhk_type: e.target.value }))}>
+              <select
+                className="select"
+                value={form.bhk_type}
+                onChange={e => setForm(f => ({ ...f, bhk_type: e.target.value }))}
+              >
                 <option value="">Select</option>
-                {['1BHK', '2BHK', '3BHK', 'Studio', 'Dormitory'].map(b => <option key={b} value={b}>{b}</option>)}
+                {['1BHK', '2BHK', '3BHK', 'Studio', 'Dormitory'].map(b => (
+                  <option key={b} value={b}>{b}</option>
+                ))}
               </select>
             </div>
             <div>
               <label className="label">Floor</label>
-              <input className="input" type="number" placeholder="0" value={form.floor} onChange={e => setForm(f => ({ ...f, floor: e.target.value }))} />
+              <input
+                className="input"
+                type="number"
+                placeholder="0"
+                value={form.floor}
+                onChange={e => setForm(f => ({ ...f, floor: e.target.value }))}
+              />
             </div>
             <div>
               <label className="label">Total Beds *</label>
-              <input className="input" type="number" min="1" placeholder="e.g. 2" value={form.total_beds} onChange={e => setForm(f => ({ ...f, total_beds: e.target.value }))} required />
+              <input
+                className="input"
+                type="number"
+                min="1"
+                placeholder="e.g. 2"
+                value={form.total_beds}
+                onChange={e => handleTotalBedsChange(e.target.value)}
+                required
+              />
             </div>
             <div>
               <label className="label">Occupied Beds</label>
-              <input className="input" type="number" min="0" placeholder="0" value={form.occupied_beds} onChange={e => setForm(f => ({ ...f, occupied_beds: e.target.value }))} />
+              <input
+                className="input"
+                type="number"
+                min="0"
+                max={form.total_beds || undefined}
+                placeholder="0"
+                value={form.occupied_beds}
+                onChange={e => handleOccupiedBedsChange(e.target.value)}
+              />
             </div>
           </div>
+
+          {/* ── Tenant details section — expands when occupied_beds > 0 ── */}
+          {showTenantSection && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <div className="h-px flex-1 bg-[var(--border)]" />
+                <span className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wide">
+                  Tenant Details ({occupiedBedsCount} bed{occupiedBedsCount !== 1 ? 's' : ''})
+                </span>
+                <div className="h-px flex-1 bg-[var(--border)]" />
+              </div>
+              <p className="text-xs text-[var(--text-muted)] -mt-1">
+                Optional — fill in details for each occupied bed. Only name is required if you want to save a tenant.
+              </p>
+
+              {tenantForms.map((tenant, i) => (
+                <div key={i} className="surface p-3 space-y-2">
+                  <div className="text-xs font-medium text-[var(--text-muted)] mb-1">
+                    Bed {i + 1}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="label text-xs">Name</label>
+                      <input
+                        className="input h-7 text-xs"
+                        placeholder="Tenant name"
+                        value={tenant.name}
+                        onChange={e => setTenantField(i, 'name', e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="label text-xs">Phone</label>
+                      <input
+                        className="input h-7 text-xs"
+                        placeholder="Phone"
+                        value={tenant.phone}
+                        onChange={e => setTenantField(i, 'phone', e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="label text-xs">Email</label>
+                      <input
+                        className="input h-7 text-xs"
+                        type="email"
+                        placeholder="Email"
+                        value={tenant.email}
+                        onChange={e => setTenantField(i, 'email', e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="label text-xs">Rent Payable Date</label>
+                      <input
+                        className="input h-7 text-xs"
+                        type="date"
+                        value={tenant.rent_payable_date}
+                        onChange={e => setTenantField(i, 'rent_payable_date', e.target.value)}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
           <div className="flex justify-end gap-2">
-            <Button variant="secondary" type="button" onClick={() => setAddOpen(false)}>Cancel</Button>
+            <Button variant="secondary" type="button" onClick={handleAddModalClose}>
+              Cancel
+            </Button>
             <Button type="submit" disabled={createRoom.isPending}>
-              {createRoom.isPending ? <Spinner size={12} /> : <Plus size={12} />}Add Room
+              {createRoom.isPending ? <Spinner size={12} /> : <Plus size={12} />}
+              Add Room
             </Button>
           </div>
         </form>
       </Modal>
 
-      {/* Bulk Add Modal */}
+      {/* Bulk Add Modal — unchanged, no tenant section here */}
       <BulkRoomAddModal
         open={bulkOpen}
         onClose={() => setBulkOpen(false)}

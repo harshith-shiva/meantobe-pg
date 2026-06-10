@@ -150,6 +150,8 @@ export function useBookings(filters = {}) {
         .order('created_at', { ascending: false })
 
       if (filters.pg_id) query = query.eq('pg_id', filters.pg_id)
+      if (filters.room_id) query = query.eq('room_id', filters.room_id) 
+
       if (filters.status) query = query.eq('status', filters.status)
       if (filters.search) query = query.or(`student_name.ilike.%${filters.search}%,student_phone.ilike.%${filters.search}%`)
 
@@ -403,5 +405,62 @@ export function useProfiles() {
       if (error) throw error
       return data
     },
+  })
+}
+
+
+// ─── TENANT HOOKS ─────────────────────────────────────────────────────────────
+
+export function useTenants(roomId) {
+  return useQuery({
+    queryKey: ['tenants', roomId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('tenants')
+        .select('*')
+        .eq('room_id', roomId)
+        .order('created_at')
+      if (error) throw error
+      return data
+    },
+    enabled: !!roomId,
+  })
+}
+
+export function useCreateTenant() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (data) => {
+      const { data: result, error } = await supabase
+        .from('tenants').insert(data).select().single()
+      if (error) throw error
+      return result
+    },
+    onSuccess: (_, vars) => qc.invalidateQueries({ queryKey: ['tenants', vars.room_id] }),
+  })
+}
+
+export function useUpdateTenant() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ id, room_id, ...data }) => {
+      const { data: result, error } = await supabase
+        .from('tenants').update(data).eq('id', id).select().single()
+      if (error) throw error
+      return { ...result, room_id }
+    },
+    onSuccess: (result) => qc.invalidateQueries({ queryKey: ['tenants', result.room_id] }),
+  })
+}
+
+export function useDeleteTenant() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ id, room_id }) => {
+      const { error } = await supabase.from('tenants').delete().eq('id', id)
+      if (error) throw error
+      return { room_id }
+    },
+    onSuccess: (result) => qc.invalidateQueries({ queryKey: ['tenants', result.room_id] }),
   })
 }

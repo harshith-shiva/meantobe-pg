@@ -24,6 +24,9 @@ export default function BookingForm({ open, onClose, pgId, existing }) {
     move_in_date: '',
     status: 'booked',
     booking_details: '',
+    rent_payable_date: '',
+    rent_paid: false,
+    roommates_accepted: true,
   })
 
   const activePgId = form.pg_id || pgId
@@ -114,6 +117,31 @@ export default function BookingForm({ open, onClose, pgId, existing }) {
             <label className="label">Booking Details / Notes</label>
             <textarea className="input" rows={3} placeholder="Any additional notes about this booking…"
               value={form.booking_details || ''} onChange={set('booking_details')} />
+              <div>
+  <label className="label">Rent Payable Date</label>
+  <input className="input" type="date" value={form.rent_payable_date || ''} onChange={set('rent_payable_date')} />
+</div>
+
+<div>
+  <label className="label">Rent Paid?</label>
+  <select className="select" value={form.rent_paid ? 'true' : 'false'}
+    onChange={e => setForm(f => ({ ...f, rent_paid: e.target.value === 'true' }))}>
+    <option value="false">No</option>
+    <option value="true">Yes</option>
+  </select>
+</div>
+
+<div className="sm:col-span-2">
+  <label className="label">Roommates Accepted?</label>
+  <select className="select" value={form.roommates_accepted === false ? 'false' : 'true'}
+    onChange={e => setForm(f => ({ ...f, roommates_accepted: e.target.value === 'true' }))}>
+    <option value="true">Yes — other beds can be rented out</option>
+    <option value="false">No — treat all beds in room as occupied</option>
+  </select>
+  <p className="text-xs text-[var(--text-muted)] mt-1">
+    If No, vacant beds in this room will show as 0 regardless of actual count.
+  </p>
+</div>
           </div>
         </div>
         <div className="flex justify-end gap-2 pt-1">
