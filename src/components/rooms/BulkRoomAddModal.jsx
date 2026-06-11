@@ -5,7 +5,7 @@ import { supabase } from '../../lib/supabase'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 
-const BHK_OPTIONS = ['1BHK', '2BHK', '3BHK', '4BHK', 'Studio', 'Dormitory']
+const BHK_OPTIONS = ['1BHK', '2BHK', '3BHK', '4BHK', 'Studio', 'Dormitory','Twin Sharing','Studio Twin Sharing']
 
 const emptyGroup = () => ({
   id: crypto.randomUUID(),
@@ -25,7 +25,7 @@ function GroupRow({ group, onChange, onRemove, canRemove, error }) {
     if (!group.from || !group.to || isNaN(f) || isNaN(t)) return null
     if (t < f) return null
     return t - f + 1
-  }, [group.from, group.to])
+  }, [group.from, group.to])  
 
   return (
     <div className={`rounded-md border ${error ? 'border-[var(--destructive)]' : 'border-[var(--border)]'} bg-[var(--bg-page)] p-3`}>

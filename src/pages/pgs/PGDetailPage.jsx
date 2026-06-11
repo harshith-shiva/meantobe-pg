@@ -351,6 +351,8 @@ function TenantExpandPanel({ roomId, pgId, totalBeds }) {
   )
 }
 
+
+
 function RoomsPanel({ pgId }) {
   const { data: rooms = [], isLoading } = useRooms(pgId)
   const createRoom = useCreateRoom()
@@ -640,7 +642,7 @@ function RoomsPanel({ pgId }) {
                 onChange={e => setForm(f => ({ ...f, bhk_type: e.target.value }))}
               >
                 <option value="">Select</option>
-                {['1BHK', '2BHK', '3BHK', 'Studio', 'Dormitory'].map(b => (
+                {['1BHK', '2BHK', '3BHK', 'Studio', 'Dormitory','Studio Twin Sharing','Twin Sharing'].map(b => (
                   <option key={b} value={b}>{b}</option>
                 ))}
               </select>
